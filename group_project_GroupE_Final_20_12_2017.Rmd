@@ -1,0 +1,482 @@
+---
+title: "Group Project"
+author: "DataChefs- Group E"
+date: "19/12/2017"
+output: html_document
+runtime: shiny
+---
+
+```{r setup, echo=T, message=FALSE, warning=FALSE}
+knitr::opts_chunk$set(echo = T)
+library(data.table)
+library(knitr)
+library(readxl)
+library (dplyr)
+library(dygraphs)
+library(xts)
+library(ggplot2)
+library(plotly)
+library(magrittr)
+library(ggpubr)
+library(shiny)
+library(gridExtra)
+library(cowplot)
+library(GGally)
+library(corrplot)
+library(forecast)
+library(tseries)
+library(fpp)
+library(lubridate)
+library(Metrics)
+library(ggthemes)
+library(ggmap)
+library(RColorBrewer)
+```
+
+
+### Create Data Table for Houly Measurments from ####
+
+In this block we create a list of all the csv files in the data folder.
+Then we create of all the files rbind together while creating a column for each list extracted from the date in the csv name.
+Then last step we split the year and the month
+
+```{r raw_data_reading, echo=T, warning=FALSE}
+
+#setwd("C:/Term_1/R_programing/project")
+filenames <- list.files("workgroup_data", pattern="*.csv", full.names=TRUE)
+ldf<-do.call(rbind, lapply(filenames, function(x) cbind(fread(x), Year=strsplit(regmatches(x, regexpr("*[0-9].[_][0-9]*", x)),split="_")[[1]][1],Month=strsplit(regmatches(x, regexpr("*[0-9].[_][0-9]*", x)),split="_")[[1]][2])))
+PTable <- data.table(ldf)
+PTable$parameter<-as.factor(PTable$parameter)
+str(PTable)
+```
+### Read Weather data from Excel
+```{r Read_Weather_data,  echo=TRUE, warning=FALSE}
+ 
+weather_data<-data.table(read_excel('weather.xlsx'))
+str(weather_data)
+```
+### Create Data table for Polutants Types
+```{r create_table _pollutants, echo=TRUE, warning=FALSE}
+PID<-c(01,06,07,08,09,10,12,14,20,30,35,37,38,39,42,43,44)
+PName<-c('SO2','CO','NO','NO2','PM2.5','PM10','NOx','O3','TOL','BEN','EBE','MXY','PXY','OXY','TCH','CH4','NMHC')
+pollutants<-data.table(cbind(PID,PName))
+str(pollutants)
+
+```
+
+
+### Get Daily Record from Hourly Pollutant Data
+Aggregate the mean of the measure value by day, month, year and pollutant
+
+```{r raw_data_get_daily, echo=TRUE, warning=FALSE}
+Daily_Pollution_Data_by_Par<-PTable[ ,list(Value=mean(value, na.rm = T)),by=list(Month,Year,day,parameter)]
+str(Daily_Pollution_Data_by_Par)
+Daily_Pollution_Data_by_station<-PTable[ ,list(Value=mean(value, na.rm = T)),by=list(Month,Year,day,parameter,station)]
+
+```
+### Merge Pollutants Names with Daily Pollutants Events
+```{r Merge_Pollutants_Daily_Values, echo=TRUE, warning=FALSE}
+Daily_Pollution_Data_by_Par$parameter<-as.factor(Daily_Pollution_Data_by_Par$parameter)
+pollutants$PID<-as.factor(pollutants$PID)
+setkey(Daily_Pollution_Data_by_Par,parameter)
+setkey(pollutants,PID)
+Daily_Pollutants_Values<-pollutants[Daily_Pollution_Data_by_Par, nomatch=0]
+str(Daily_Pollutants_Values)
+Daily_Pollution_Data_by_station$parameter<-as.factor(Daily_Pollution_Data_by_station$parameter)
+setkey(Daily_Pollution_Data_by_station,parameter)
+Daily_Pollution_Data_by_st<-pollutants[Daily_Pollution_Data_by_station, nomatch=0]
+```
+### Display Measurment Stations Map
+```{r mapDisplay, echo=TRUE}
+stationsdt<-data.table(read.csv("medidores_final.csv"))
+str(stationsdt)
+
+Daily_Pollution_Data_by_st$station<-as.factor(Daily_Pollution_Data_by_st$station)
+stationsdt$codigo<-as.factor(stationsdt$codigo)
+DPVSL<-merge(Daily_Pollution_Data_by_st, stationsdt, by.x="station", by.y="codigo", nomatch=0)
+DPVSL$Twenty<-rep(20, nrow(DPVSL))
+DPVSL$Year<- as.numeric(with(DPVSL, paste0(Twenty,Year)))
+
+
+mean.longitude <- mean(DPVSL$long)
+mean.latitude <- mean(DPVSL$lat)
+map<-get_map(location='Madrid', zoom = 12,maptype='hybrid',source="google")
+pollutant.map <-ggmap(map) + geom_point(data=DPVSL,aes(x=long, y=lat))+ stat_density2d(data=DPVSL,aes(x=long, y=lat, fill=..level.., alpha=..level..),geom="polygon")+ geom_point(data=DPVSL,
+ aes(x=long, y=lat), fill='red', size=5,shape=21, alpha=0.8)+ guides(size=FALSE, alpha = FALSE)
+pollutant.map
+
+
+
+```
+
+
+
+### Merging Pollutant daily values with daily weather data and create final dataset for Analysis
+```{r Merging_Weather_and _Pollutants, echo=TRUE, warning=FALSE}
+
+Daily_Pollutants_Values$Twenty<-rep(20, nrow(Daily_Pollutants_Values))
+Daily_Pollutants_Values$Time<-rep("000000",nrow(Daily_Pollutants_Values))
+Daily_Pollutants_Values$Year<- with(Daily_Pollutants_Values, paste0(Twenty,Year))
+Daily_Pollutants_Values$date <- as.character(with(Daily_Pollutants_Values, paste(Year, Month, day,sep="-")), "%Y-%m-%d")
+Daily_Pollutants_Values$date<- as.POSIXct(paste(Daily_Pollutants_Values$date, Daily_Pollutants_Values$Time), format="%Y-%m-%d %H%M%S",tz = "UTC")
+Daily_Pollutants_Values$Twenty<-NULL
+Daily_Pollutants_Values$Time<-NULL
+str(Daily_Pollutants_Values)
+attr(weather_data$date, "tzone")
+attr(Daily_Pollutants_Values$date, "tzone")
+str(weather_data)
+setkey(Daily_Pollutants_Values,date)
+setkey(weather_data,date)
+DWPD<-data.table(Daily_Pollutants_Values[weather_data, nomatch=0])
+str(DWPD)
+DWPD<-DWPD[PName %in% c('NO2','SO2','O3','PM2.5') , .(PID,PName,Month,Year,day,Value,date,temp_avg,temp_max,temp_min,precipitation,humidity,wind_avg_speed)]
+#DWPD<-DWPD [, list(Value := round(Value,4)),by(PID,PName,Month,Year,day,Value,date,temp_avg,temp_max,temp_min,precipitation,humidity,wind_avg_speed)]
+DWPD[1:10,]
+DWPD_wide<-dcast(DWPD, date + temp_avg +humidity+ wind_avg_speed+precipitation ~ PName,value.var = 'Value')
+str(DWPD_wide)
+```
+### Correlation Analysis
+
+## Relations between Pollutants and weather data
+
+```{r echo=TRUE, warning=FALSE}
+require(ggplot2)
+shinyApp(
+  ui = fluidPage(
+    selectInput("Pollutant", label = "Select Pollutant",
+              choices = c('NO2'='NO2',"SO2"="SO2", "O3"="O3","PM2.5"="PM2.5" ), selected ='NO2' ),
+    selectInput("weatherVar", label = "Select Weather Variable",
+              choices = c("temp_avg"='temp_avg',"humidity"="humidity", "wind_avg_speed"="wind_avg_speed","precipitation"="precipitation" ), selected ='temp_avg' ),
+    plotOutput("cityplt")
+  ),
+  server = function(input, output) {
+  
+   # if(input$Pollutant=='NO2' & input$weatherVar=='temp_avg')
+    #{
+     # xaxis<-'NO2'
+      #yaxis<-'tem_avg'
+    #}
+    output$cityplt <- renderPlot({
+      ggplot(DWPD_wide, aes(x=DWPD_wide[[input$Pollutant]],y=DWPD_wide[[input$weatherVar]])) + geom_point(size=2.5)+
+    stat_smooth(method='auto')+
+  labs(x=input$Pollutant,y=input$weatherVar)
+    })
+  },
+  options = list(height = 800)
+
+)
+```
+
+Correlations among pollutants
+
+```{r corrolation matrix2, echo=TRUE, warning=FALSE }
+
+str(DWPD_wide)
+data_sample<-DWPD_wide[,.(NO2,SO2,O3,PM2.5)]
+head(data_sample)
+corrplot(cor(data_sample), method = 'number', tl.col = 'black')
+
+
+
+p<-GGally::ggpairs(data_sample,axisLabels = 'none',size=1,lwd=0.5,alpha=.5)
+
+ggplotly(p, width = 800, height = 500)
+```
+
+
+Regression Analysis for NO2
+
+
+```{r reganalysis, echo=TRUE, warning=FALSE}
+pollutants <- c("NO2", "O3", "PM2.5", "SO2")
+#boxplot(DWPD_wide$NO2, DWPD_wide$O3, DWPD_wide$PM2.5, DWPD_wide$SO2, names=pollutants, colour=pollutants)
+
+g <- ggplot(DWPD, aes(PName, Value))
+g + geom_boxplot(aes(fill=factor(PName))) + 
+  theme(axis.text.x = element_text(angle=65, vjust=0.6)) + 
+  labs(title="Pollutants Box plot", 
+       x="Pollutants",
+       y="Daily Values")
+dwpd2 <- DWPD_wide[,c("temp_avg", "humidity", "wind_avg_speed", "precipitation", "NO2", "O3", "PM2.5", "SO2")]
+corrplot(cor(dwpd2), method ="number", type="upper", tl.col='black', diag=F) ;grid()
+```
+
+
+So far here are trends we can assume to be true looking at the correlation matrix between the variables.
+Pollutants are negatively correlated with precipitation, it makes sense the rain "cleans" the air. However the correlation is weak.
+There is no clear correlation between temperature or humidity and the level of pollutants in general, different polltants behave differently.
+To be noted that humidity and temp_avg are strongly negatively correlated.
+Generally (75% of polltants) pollutants are negatively correlated with wind_avg_speed. That makes sense, wind disperses most pollutants.
+
+It seems at first glance that NO2 and SO2 have a similar profile when it comes to meeteorological data
+O3 and PM2.5 have a singular profile.
+Ozone (O3) is also the pollutant with the highest correlation to temperature_avg and humidity (negative correlation yet the highest in absolute terms)
+Inversely PM2.5 is the pollutant the least correlated with temp_avg and humidity (in absolute term)
+O3 is also the only pollutant positively correlated with the wind_avg_speed. 
+
+Now studying the relation between the pollutants themselves, O3 is the only pollutants negatively correlated with all the others.
+
+```{r, echo=TRUE, warning=FALSE}
+set.seed(50)
+
+train_NO2_index <- sample(nrow(DWPD_wide), 0.85*nrow(DWPD_wide))
+str(train_NO2_index)
+
+train_data <- DWPD_wide[train_NO2_index,]
+test_data <- DWPD_wide[-train_NO2_index,]
+
+str(train_data)
+
+NO2_model <- lm(NO2~ humidity+wind_avg_speed+O3+PM2.5+SO2, data=train_data)
+summary(NO2_model)
+
+NO2res <- NO2_model$residuals
+summary(NO2res)
+plot(NO2_model)
+plot(NO2res, main='Residuals of Multi-Reg Model for NO2 levels');grid()
+
+layout(matrix(c(1,1,2,3), 2, 2, byrow = TRUE))
+plot(density(NO2res), main = 'Density')
+qqnorm(NO2res);qqline(NO2res, col = 2) 
+
+shapiro.test(NO2res)
+
+
+#boxplot(NO2res)
+
+boxplot(NO2res, col="#FF000099", 
+  medcol="#FFDB00FF", 
+  whiskcol="#49FF00FF", 
+  staplecol="#00FF92FF", 
+  boxcol="#0092FFFF", 
+  outcol="#4900FFFF", 
+  outbg="#FF00DB66", 
+  outcex=3, outpch=21) 
+
+
+outliers <- NO2res[(NO2res < quantile(NO2res, 0.25)-1.5*IQR(NO2res)) | (NO2res > quantile(NO2res, 0.75)+1.5*IQR(NO2res))]
+length(outliers)
+
+fitted_NO2 <- NO2_model$fitted.values
+predict_NO2 <- predict(NO2_model, test_data)
+
+
+mae(train_data$NO2, fitted_NO2)
+mae(test_data$NO2, predict_NO2)
+
+```
+
+
+### Time series graphs with Loop
+```{r Time Series Graph Loop, echo=TRUE, warning=FALSE}
+
+TimeSeriesGraphs<-function(x)
+{
+  DWPD_wide_ts<-xts(x, order.by=x$date)
+myDyGraph <- dygraph(DWPD_wide_ts)
+str(DWPD_wide_ts)
+result <- lapply(1:length(DWPD_wide_ts), function(i) if (names(DWPD_wide_ts)[i]%in% c('cno2_ma','SO2','O3','PM2.5')) {dygraph(DWPD_wide_ts[,i], main = c(names(DWPD_wide_ts)[i]," Time Series"))%>%  dyRangeSelector() %>% dyOptions(colors = RColorBrewer::brewer.pal(3, "Set2")) 
+})
+return (result)
+}
+res<-TimeSeriesGraphs(DWPD_wide)
+res<-res[-which(sapply(res, is.null))]
+htmltools::tagList(res)
+
+
+```
+
+Creating Weekly, Monthly and day of the week tables
+```{r dateseries, echo=TRUE, warning=FALSE}
+DatesTable_DOW<-function(x)
+{
+WPD_DayofTheWeek<-x
+WPD_DayofTheWeek$dow<-wday(WPD_DayofTheWeek$date, label=TRUE)
+WPD_DayofTheWeek<-WPD_DayofTheWeek[ ,list(mean_NO2=mean(NO2, na.rm = T), mean_O3=mean(O3, na.rm = T),mean_SO2=mean(SO2, na.rm=T),mean_PM2.5=mean(PM2.5, na.rm=T)),by=list(dow)]
+return(WPD_DayofTheWeek)
+}
+DatesTable_DOW_Dummy<-function(x)
+{
+WPD_DayofTheWeek<-x
+WPD_DayofTheWeek$dow<-wday(WPD_DayofTheWeek$date, label=TRUE)
+#WPD_DayofTheWeek[!WPD_DayofTheWeek$dow == "Mon",]$monday <- 0
+return(WPD_DayofTheWeek)
+}
+
+DayofTheWeek_T<-DatesTable_DOW(DWPD_wide)
+DayofTheWeek_T$dow<-as.factor(DayofTheWeek_T$dow)
+
+
+AggregateDate<-function(x){
+  WPD_Date_Agg<-x
+  ts_NO2 = ts(WPD_Date_Agg[, c('NO2')])
+WPD_Date_Agg$clean_NO2 = tsclean(ts_NO2)
+ts_O3 = ts(WPD_Date_Agg[, c('O3')])
+WPD_Date_Agg$clean_O3 = tsclean(ts_O3)
+
+WPD_Date_Agg$wNO2 = ma(WPD_Date_Agg$clean_NO2, order=7)
+WPD_Date_Agg$wO3 = ma(WPD_Date_Agg$clean_O3, order=7)
+WPD_Date_Agg$mNO2 = ma(WPD_Date_Agg$clean_NO2, order=30)
+WPD_Date_Agg$mO3 = ma(WPD_Date_Agg$clean_O3, order=30)
+return(WPD_Date_Agg)
+}
+
+WPD_aggregated<-AggregateDate(DWPD_wide)
+str(WPD_aggregated)
+
+
+```
+
+View Pollutants per week
+```{r weekly, echo=TRUE, warning=FALSE}
+require(ggplot2)
+shinyApp(
+  ui = fluidPage(
+    selectInput("Pollutant", label = "Select Pollutant",
+              choices = c('NO2'='mean_NO2',"SO2"="mean_SO2", "O3"="mean_O3","PM2.5"="mean_PM2.5" ), selected ='NO2' ),
+    plotOutput("dowplt")
+  ),
+  server = function(input, output) {
+  
+   # if(input$Pollutant=='NO2' & input$weatherVar=='temp_avg')
+    #{
+     # xaxis<-'NO2'
+      #yaxis<-'tem_avg'
+    #}
+    output$dowplt <- renderPlot({
+      ggplot(DayofTheWeek_T, aes(x=DayofTheWeek_T$dow,y = DayofTheWeek_T[[input$Pollutant]])) +geom_bar(stat="identity",position="identity",width=.5, fill="tomato3")+
+  labs(x=DayofTheWeek_T$dow,y=input$Pollutant)
+    })
+  },
+  options = list(height = 800)
+
+)
+```
+
+View Pollutants aggregated by Month or Week
+```{r aggegated, echo=TRUE, warning=FALSE}
+require(ggplot2)
+shinyApp(
+  ui = fluidPage(
+    selectInput("Pollutant", label = "Select Pollutant and Period",
+              choices = c('Weekly NO2'='wNO2', 'Monthly NO2'='mNO2', "Weekly O3"="wO3", "Monthly O3"="mO3"), selected ='NO2' ),
+    plotOutput("dowplt")
+  ),
+  server = function(input, output) {
+  
+   # if(input$Pollutant=='NO2' & input$weatherVar=='temp_avg')
+    #{
+     # xaxis<-'NO2'
+      #yaxis<-'tem_avg'
+    #}
+    
+    output$dowplt <- renderPlot({
+      ggplot() +
+  geom_line(data =WPD_aggregated , aes(x = WPD_aggregated$date, y = WPD_aggregated[[input$Pollutant]], colour="tomato3"))  +
+  ylab('Aggregated')+xlab('Date')
+    })
+  },
+  options = list(height = 800)
+
+)
+
+```
+Arima Modeling, Time series Analysis
+After examining the Timeseries for each pollutant, it seems that some patterns are repeating themselves in the data related to seasons. NO2 and SO2, there is a periodic peak in Winter at the highest in January and a low in July. For O3, it peaks in Summer and more particularly in July and a low in January. If there is periodicity or seasonality in PM2.5 it is less obvious.
+
+We can therefore assume that it it possible to predict future levels of pollutants based on patterns in the historicakl data and this is why we will conduct an Timeseries analysis with ARIMA modeling.
+
+
+With ACF and PACF we revealed two potential periods (of 1 and 7 days)
+
+We therefore ran an ARIMA model (seasonnal and not seasonal with a lag of 1 and 7days)
+
+#Arima
+```{r arima, echo=TRUE, warning=FALSE}
+NWPD_wide<-DWPD_wide
+NWPD_wide$date2<-as.Date(NWPD_wide$date)
+ggplot(NWPD_wide, aes(date2, NO2)) + geom_line() + scale_x_date('month')  + ylab("NO2") +
+            xlab("")
+count_ts = ts(NWPD_wide[, c('NO2')])
+
+NWPD_wide$clean_NO2 = tsclean(count_ts)
+  
+ggplot() +
+  geom_line(data = NWPD_wide, aes(x = date2, y = clean_NO2)) + ylab('Clean No2 Count')
+
+NWPD_wide$cnt_ma = ma(NWPD_wide$clean_NO2, order=7) # using the clean count with no outliers
+NWPD_wide$cnt_ma30 = ma(NWPD_wide$clean_NO2, order=30)
+
+ggplot() +
+  geom_line(data = NWPD_wide, aes(x = date2, y = clean_NO2, colour = "Counts")) +
+  geom_line(data = NWPD_wide, aes(x = date2, y = cnt_ma,   colour = "Weekly Moving Average"))  +
+  geom_line(data = NWPD_wide, aes(x = date2, y = cnt_ma30, colour = "Monthly Moving Average"))  +
+  ylab('No2 Count')
+
+ggplot() +
+  geom_line(data = NWPD_wide, aes(x = date2, y = cnt_ma,   colour = "Weekly Moving Average"))  +
+  ylab('No2 Count')
+
+ggplot() +
+  geom_line(data = NWPD_wide, aes(x = date2, y = cnt_ma30, colour = "Monthly Moving Average"))  +
+  ylab('No2 Count')
+
+allow.multiplicative.trend=TRUE 
+
+count_ma = ts(na.omit(NWPD_wide$cnt_ma), frequency=30)
+decomp = stl(count_ma, s.window="periodic")
+deseasonal_cnt <- seasadj(decomp)
+plot(decomp)
+
+Acf(count_ma, main='')
+
+Pacf(count_ma, main='')
+
+count_d1 = diff(deseasonal_cnt, differences = 1)
+plot(count_d1)
+adf.test(count_d1, alternative = "stationary")
+
+Acf(count_d1, main='ACF for Differenced Series')
+Pacf(count_d1, main='PACF for Differenced Series')
+
+auto.arima(deseasonal_cnt, seasonal=FALSE)
+
+fit<-auto.arima(deseasonal_cnt, seasonal=FALSE)
+tsdisplay(residuals(fit), lag.max=45, main='(1,1,1) Model Residuals')
+
+fit2 = arima(deseasonal_cnt, order=c(1,1,7))
+
+fit2
+
+tsdisplay(residuals(fit2), lag.max=15, main='Seasonal Model Residuals')
+
+fcast <- forecast(fit2, h=30)
+plot(fcast)
+
+hold <- window(ts(deseasonal_cnt), start=700)
+
+fit_no_holdout = arima(ts(deseasonal_cnt[-c(700:725)]), order=c(1,1,7))
+
+fcast_no_holdout <- forecast(fit_no_holdout,h=25)
+plot(fcast_no_holdout, main=" ")
+lines(ts(deseasonal_cnt))
+fit_w_seasonality = auto.arima(deseasonal_cnt, seasonal=TRUE)
+fit_w_seasonality
+seas_fcast <- forecast(fit_w_seasonality, h=30)
+seas_fcast
+```
+### Weekly Dummy Variable
+```{r dailyRegr, echo=TRUE, warning=FALSE}
+DummyDWPD<-DWPD_wide
+DummyDWPD$dow<-wday(DummyDWPD$date)
+DummyDWPD$dow<-factor(DummyDWPD$dow,labels=c("Sun","Mon","Tue","Wed","Thur","Fri","Sat"))
+DummyDWPD$dowName<-wday(DummyDWPD$date, label = TRUE)
+str(DummyDWPD)
+dummy_model_NO2 <- lm(NO2~humidity+wind_avg_speed+O3+PM2.5+SO2+ dow , DummyDWPD)
+summary(dummy_model_NO2)
+
+```
+
+The very high frequency of the data questionned teh relevancy of our ARIMA model and this is why we converted each day od the week into dummy variable to run a second regression model to explain variations in levels of NO2 according to certain peridoicity.
+
+The regression model with dummy for each day of the week is conclusive. There is indeed periodicity and the 6 dummy for the days of teh week except Sunday are are significant to explain variations in levels of NO2. The R^2 is only slightly better than the original regression model though.
